@@ -17,14 +17,17 @@ CSV、填写批次号，系统逐行校验后预览**新增 / 修改 / 撤回（
 - 预览页分类展示新增、修改（旧值→新值）、撤回、不变四类差异，确认后才发布。
 - 首页登记当前版本号、批次号、行数、发布时间（UTC）与内容 SHA256，并提供
   已发布 CSV 的在线查看入口和事件日志（含每次恢复记录）。
+- 顶部「发布凭据 / 取证」页为启用后的每次发布登记版本号、批次号、当版 CSV
+  SHA-256 与前版凭据摘要，支持按版本下载 CSV/凭据及上传另存文件的链条核验
+  （详见下文「发布凭据与浏览器取证」）。
 
 ## 本地启动
 
-环境要求：Python 3.10+（仅依赖 Flask）。
+环境要求：Python 3.10+（依赖 Flask 与 waitress；本地开发用 flask run 时 waitress 可不装）。
 
 ```bash
 cd wq-publish
-./run.sh                 # 自动创建 .venv、安装 flask，监听 http://127.0.0.1:5000
+./run.sh                 # 自动创建 .venv、安装依赖，监听 http://127.0.0.1:5000
 ```
 
 手动方式：
@@ -41,8 +44,8 @@ WQ_DATA_DIR=$PWD/data WQ_DOWNSTREAM_DIR=$PWD/downstream \
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `WQ_DATA_DIR` | `./data` | SQLite 数据库、flask 密钥、隔离区存放目录 |
-| `WQ_DOWNSTREAM_DIR` | `./downstream` | 下游采集程序读取目录，正式文件固定名为 `published_results.csv` |
+| `WQ_DATA_DIR` | `./data` | SQLite 数据库、flask 密钥、版本快照、隔离区存放目录 |
+| `WQ_DOWNSTREAM_DIR` | `./downstream` | 下游采集程序读取目录，正式文件固定名为 `published_results.csv`，凭据为 `published_results.credential.json` |
 
 下游采集程序只需固定读取 `WQ_DOWNSTREAM_DIR/published_results.csv`。
 
@@ -83,26 +86,96 @@ WQ_DATA_DIR=$PWD/data WQ_DOWNSTREAM_DIR=$PWD/downstream \
   明确要求重新预览，绝不可能覆盖先发布者；重新预览后即可正常发布。
 - 同一会话重复发布、已取消/已发布/已过期会话再次确认，一律拒绝。
 
+## 发布凭据与浏览器取证（监管复核）
+
+监管复核时需要回答“这份水质 CSV 属于哪次发布、后续版本是否接续”。
+顶部导航「发布凭据 / 取证」页提供完整的版本链与自助核验，零命令行操作。
+
+**凭据内容与链**
+
+- 从取证功能**启用后的首次新发布**起，每次发布成功都生成一份凭据
+  （`published_results.credential.json`，同时保存在数据库
+  `published_versions` 与 `data/versions/v<N>/` 快照中）：
+  - `version`：版本号；`batch_no`：该版批次号；`row_count`、`published_at`；
+  - `csv_sha256`：该版 CSV（原子替换到下游的那份字节）的 SHA-256；
+  - `prev_credential_sha256`：前一版**凭据文件字节**的 SHA-256；
+    链首版为 `null`，表示无前驱。
+- 凭据文件摘要 = SHA-256(凭据原始字节)。生成时使用固定字段顺序与紧凑分隔符，
+  下载返回登记中的原始字节，不做二次格式化，任何机器复算结果一致。
+- **启用前的旧版**（含升级前已存在的版本）在取证页明确标注「无凭据 / 启用前旧版」，
+  可下载当时的 CSV 供参考，但**不补造凭据**，也不会出现在链条起点之前。
+  升级后的首次发布会成为链首版（`prev_credential_sha256: null`）。
+
+**发布成功才生成凭据；不分叉、不指向错版数据**
+
+- 凭据与 CSV 在同一个发布事务内确定并登记：先写 `data/versions/v<N>/` 快照
+  （fsync），再原子替换下游 CSV 与凭据，最后提交 SQLite 登记。任一步崩溃，
+  数据库未提交，重启时 `recover()` 按旧登记回滚下游文件与凭据；
+  已提交则快照、下游文件与登记均已持久化。
+- 并发发布仍由 `BEGIN IMMEDIATE` 串行化：只有取得写锁且基线未过期的一个
+  发布会成功，失败/过期/取消的会话不会产生凭据，版本号不会分叉。
+- 若链上前一版的凭据记录缺失（例如人工删库），发布被拒绝并提示核对数据目录，
+  **宁可暂不发布也不生成断链或指向不存在数据的凭据**。
+- 启动恢复额外核对：下游凭据缺失/被改按登记重建；当前版本属于启用前旧版时，
+  遗留凭据一律移入隔离区；历史快照被篡改/缺失按登记重建；未登记的快照目录
+  隔离，不冒充历史版本。
+
+**按版本下载与上传核验**
+
+- 取证页按版本列出：版本号、批次号、行数、发布时间、当版 CSV SHA-256、
+  前版凭据摘要、凭据状态；可分别下载该版 CSV 与凭据 JSON（历史版本内容来自
+  发布时快照，后续发布不会改变）。
+- 「核验选定版本」只读取该版本的快照与登记，逐项比对 CSV 摘要、凭据文件摘要、
+  凭据内字段及与前一版的链接；结论只依据选定版本，核验期间的新发布不改变结论。
+- 「核验另存的 CSV 与凭据文件」可上传此前下载的两份文件：核算文件摘要、与登记
+  反查对应版本、逐项比对凭据字段、检查前驱摘要是否等于上一版凭据摘要，并展示
+  每项检查结果与不符原因（内容被改、CSV 与凭据错配、接错版本、链条不接续、
+  仅上传一份等）。分项结果与原因逐条列出，文件只读不写。
+
 ## 自测
 
 ```bash
 .venv/bin/python -I tests/selftest.py
+.venv/bin/python -I tests/evidence_selftest.py
 ```
 
-覆盖 42 项断言：CSV 各类非法输入、上传→预览→发布全链路、增改删分类与撤回语义、
-同版本双页面并发冲突（409 + obsolete + 重新预览成功）、文件缺失/损坏/临时文件/
-游离文件/改名未提交五类崩溃恢复、会话取消与重复发布防护。
+`selftest.py` 覆盖 42 项断言：CSV 各类非法输入、上传→预览→发布全链路、
+增改删分类与撤回语义、同版本双页面并发冲突（409 + obsolete + 重新预览成功）、
+文件缺失/损坏/临时文件/游离文件/改名未提交五类崩溃恢复、会话取消与重复发布防护。
+
+`evidence_selftest.py` 覆盖 54 项断言：启用前旧版无凭据且不补造、链首与后续版本
+前驱关系、按版本下载内容不变、上传核验的通过与各类不符原因、核验期间新发布
+不改变结论、并发只产生一个版本、断链时拒绝发布、凭据/快照的崩溃恢复与隔离、
+compose 配置。
 
 `examples/` 下提供 `batch_v1.csv`、`batch_v2_revision.csv`（含增改删）与
 `batch_invalid.csv`（含重复、负数、空值）可直接在页面上演练。
 
+## Docker Compose 启动
+
+```bash
+cd wq-publish
+docker compose up -d --build
+# 浏览器打开 http://127.0.0.1:5000/
+```
+
+- 服务以 `serve.py`（waitress，单进程多线程）监听 0.0.0.0:5000；
+- 两份命名卷持久化：`wq-data` → `/data`（数据库、版本快照、隔离区），
+  `wq-downstream` → `/downstream`（下游读取的 CSV 与凭据）；
+- `replicas: 1`：同一组卷只允许一个写实例；不要多实例共享同一组卷；
+- 查看日志：`docker compose logs -f`；停止：`docker compose down`（卷保留）。
+
 ## 部署提示与已知限制
 
-- `flask run` 为开发服务器；正式环境建议用 `waitress-serve --host 127.0.0.1
-  --port 5000 wsgi:create_app`（或 gunicorn 单实例多线程）。并发正确性依赖
-  SQLite 的 `BEGIN IMMEDIATE` 文件锁与同目录 `os.replace`，多 worker 部署时
-  必须共享同一个 `WQ_DATA_DIR` 与 `WQ_DOWNSTREAM_DIR`。
-- 全量结果按版本保留在 `results` 表中，当前未提供历史版本回滚的页面入口
-  （数据具备，可后续增加）；历史 CSV 文件本身只保留最新一版。
+- 本地开发仍可用 `./run.sh`（flask run）；正式环境推荐 Docker Compose，
+  或 `waitress-serve --host 127.0.0.1 --port 5000 wsgi:create_app`（gunicorn
+  单实例多线程亦可）。并发正确性依赖 SQLite 的 `BEGIN IMMEDIATE` 文件锁与
+  同目录 `os.replace`，多 worker 部署时必须共享同一个 `WQ_DATA_DIR` 与
+  `WQ_DOWNSTREAM_DIR`。
+- 全量结果按版本保留在 `results` 表；取证版本另存发布快照于
+  `data/versions/v<N>/` 与数据库 `published_versions` 表。当前未提供历史版本
+  回滚（重新发布）的页面入口。
+- 凭据为明文 JSON 摘要链，用于内部一致性核对与审计溯源；它不是数字签名，
+  也没有第三方时间戳，不能单独作为防篡改的对外法律证明。
 - 上传上限 16MB；认证、权限控制未包含在本版本内，建议仅监听内网或前置反向代理
   加访问控制。

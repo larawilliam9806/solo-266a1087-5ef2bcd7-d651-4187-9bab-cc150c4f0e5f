@@ -1,6 +1,7 @@
 """Flask 路由：上传校验 → 预览增删改 → 确认整批替换。"""
 from __future__ import annotations
 
+import io
 import os
 import secrets
 import sqlite3
@@ -16,7 +17,13 @@ from flask import (
     url_for,
 )
 
-from .storage import LIVE_FILENAME, PublishConflictError, Storage
+from .evidence import pretty_credential
+from .storage import (
+    CREDENTIAL_FILENAME,
+    LIVE_FILENAME,
+    PublishConflictError,
+    Storage,
+)
 from .validation import format_concentration, validate_csv
 
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
@@ -61,6 +68,7 @@ def create_app(data_dir: str | None = None, downstream_dir: str | None = None) -
         return render_template(
             "index.html", reg=reg, rows=rows, events=events,
             live_filename=LIVE_FILENAME,
+            credential_filename=CREDENTIAL_FILENAME,
         )
 
     @app.post("/preview")
@@ -172,9 +180,110 @@ def create_app(data_dir: str | None = None, downstream_dir: str | None = None) -
             download_name=LIVE_FILENAME, as_attachment=False,
         )
 
+    # ---------- 浏览器取证页 ----------
+    @app.get("/evidence")
+    def evidence():
+        history = storage.full_history()
+        requested = request.args.get("version", type=int)
+        if requested is None and history:
+            requested = history[-1]["version"]
+        selected = None
+        if requested is not None:
+            selected = next((h for h in history if h["version"] == requested), None)
+            if selected is None:
+                flash(f"版本 v{requested} 不存在", "error")
+                return redirect(url_for("evidence"))
+
+        check = None
+        check_version = request.args.get("check", type=int)
+        if check_version is not None:
+            pv = storage.published_version(check_version)
+            if pv is None:
+                flash(f"版本 v{check_version} 没有发布凭据可供核验", "error")
+            else:
+                check = storage.verify_registered_version(check_version)
+
+        return render_template(
+            "evidence.html",
+            history=history,
+            selected=selected,
+            activation_version=storage.evidence_activation_version(),
+            credential_filename=CREDENTIAL_FILENAME,
+            check=check,
+        )
+
+    @app.get("/evidence/<int:version>/credential.json")
+    def evidence_credential(version: int):
+        payload, raw, digest = storage.version_credential(version)
+        if raw is None:
+            abort(404, description=f"v{version} 没有发布凭据（取证启用前的版本不补造）")
+        resp = send_file(
+            io.BytesIO(raw), mimetype="application/json",
+            download_name=f"v{version}-{CREDENTIAL_FILENAME}",
+            as_attachment=True,
+        )
+        resp.headers["X-Credential-SHA256"] = digest
+        return resp
+
+    @app.get("/evidence/<int:version>/data.csv")
+    def evidence_version_csv(version: int):
+        text = storage.version_csv_text(version)
+        if text is None:
+            abort(404, description=f"版本 v{version} 不存在")
+        return send_file(
+            io.BytesIO(text.encode("utf-8")), mimetype="text/csv",
+            download_name=f"v{version}-{LIVE_FILENAME}", as_attachment=True,
+        )
+
+    @app.post("/evidence/verify")
+    def evidence_verify():
+        csv_upload = request.files.get("csv_file")
+        cred_upload = request.files.get("credential_file")
+        csv_raw = None
+        if csv_upload is not None and csv_upload.filename:
+            csv_raw = csv_upload.read(MAX_UPLOAD_BYTES + 1)
+            if len(csv_raw) > MAX_UPLOAD_BYTES:
+                flash("CSV 文件超过 16MB 上限", "error")
+                return redirect(url_for("evidence"))
+        cred_raw = None
+        if cred_upload is not None and cred_upload.filename:
+            cred_raw = cred_upload.read(MAX_UPLOAD_BYTES + 1)
+            if len(cred_raw) > MAX_UPLOAD_BYTES:
+                flash("凭据文件超过 16MB 上限", "error")
+                return redirect(url_for("evidence"))
+        if csv_raw is None and cred_raw is None:
+            flash("请至少选择一份要核验的文件", "error")
+            return redirect(url_for("evidence"))
+
+        # 一次核验只读取一次登记快照；期间的新发布会另开版本，不改变本次结论
+        result = storage.verify_uploaded_evidence(csv_raw, cred_raw)
+        storage.log(
+            "verify",
+            f"取证核验：CSV={'有' if csv_raw is not None else '无'}，"
+            f"凭据={'有' if cred_raw is not None else '无'}，"
+            f"结论={'通过' if result['ok'] else '不通过'}",
+        )
+        preview_limit = 64 * 1024
+        csv_text = None
+        if csv_raw is not None:
+            csv_text = csv_raw[:preview_limit].decode("utf-8-sig", errors="replace")
+            if len(csv_raw) > preview_limit:
+                csv_text += "\n…（文件较大，页面仅展示前 64KB）"
+        return render_template(
+            "verify.html",
+            result=result,
+            csv_name=csv_upload.filename if csv_raw is not None else None,
+            cred_name=cred_upload.filename if cred_raw is not None else None,
+            csv_text=csv_text,
+            cred_text=pretty_credential(result["credential_payload"], cred_raw),
+            credential_filename=CREDENTIAL_FILENAME,
+        )
+
     @app.errorhandler(413)
     def too_large(_):
         flash("上传文件超过 16MB 上限", "error")
+        if request.path.startswith("/evidence"):
+            return redirect(url_for("evidence"))
         return redirect(url_for("index"))
 
     return app

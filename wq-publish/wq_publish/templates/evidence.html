@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}发布凭据与版本链 · 水质批次修订发布{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>发布凭据与版本链（浏览器取证）</h2>
+  <p class="muted" style="margin-top:0">
+    自取证登记启用版本 <strong>v{{ activation_version }}</strong> 起，每版发布成功时生成本版凭据：
+    版本号、批次号、当版 CSV 的 SHA-256，以及前一版凭据文件的 SHA-256（链首版声明无前驱）。
+    启用前的旧版按规则<strong>没有凭据，也不补造证明</strong>。
+  </p>
+  {% if history %}
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:60px">版本</th>
+          <th>批次号</th>
+          <th style="width:60px">行数</th>
+          <th>发布时间 (UTC)</th>
+          <th>当版 CSV SHA-256</th>
+          <th>前版凭据摘要</th>
+          <th style="width:150px">凭据</th>
+          <th style="width:240px">下载</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for h in history %}
+        <tr {% if selected and h.version == selected.version %}style="background:#eff8ff"{% endif %}>
+          <td><a href="{{ url_for('evidence', version=h.version) }}"><strong>v{{ h.version }}</strong></a></td>
+          <td>{{ h.batch_no }}</td>
+          <td>{{ h.row_count }}</td>
+          <td>{{ h.published_at or '—（旧版未记录）' }}</td>
+          <td style="font-family:monospace;font-size:12px">{{ h.csv_sha256[:20] }}…</td>
+          <td style="font-family:monospace;font-size:12px">
+            {% if not h.has_credential %}—{% elif h.prev_credential_sha256 %}{{ h.prev_credential_sha256[:20] }}…{% else %}<span class="tag same">无前驱</span>{% endif %}
+          </td>
+          <td>
+            {% if h.has_credential %}
+              <span class="tag ins">有凭据</span>
+              <div class="muted" style="font-family:monospace;font-size:11px">{{ h.credential_sha256[:16] }}…</div>
+            {% else %}
+              <span class="tag same">无凭据</span>
+              <div class="muted" style="font-size:11px">启用前旧版</div>
+            {% endif %}
+          </td>
+          <td>
+            <a href="{{ url_for('evidence_version_csv', version=h.version) }}">CSV</a>
+            {% if h.has_credential %}
+              · <a href="{{ url_for('evidence_credential', version=h.version) }}">凭据 JSON</a>
+            {% else %}
+              · <span class="muted">无凭据</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted" style="margin-bottom:0">尚无任何已发布版本。</p>
+  {% endif %}
+</div>
+
+{% if selected %}
+<div class="card">
+  <h2>选定版本 v{{ selected.version }} 的凭据核验</h2>
+  <div class="meta">
+    <div><b>批次号</b><span>{{ selected.batch_no }}</span></div>
+    <div><b>行数</b><span>{{ selected.row_count }}</span></div>
+    <div><b>发布时间 (UTC)</b><span>{{ selected.published_at or '—（旧版未记录）' }}</span></div>
+    <div><b>凭据状态</b>
+      <span style="font-size:15px">
+        {% if selected.has_credential %}有凭据{% else %}无凭据（启用前旧版，不补造）{% endif %}
+      </span>
+    </div>
+  </div>
+
+  <table style="margin-top:14px">
+    <tbody>
+      <tr><th style="width:220px">当版 CSV SHA-256</th>
+          <td style="font-family:monospace;font-size:12px">{{ selected.csv_sha256 }}</td></tr>
+      {% if selected.has_credential %}
+      <tr><th>凭据文件 SHA-256</th>
+          <td style="font-family:monospace;font-size:12px">{{ selected.credential_sha256 }}</td></tr>
+      <tr><th>前一版凭据摘要</th>
+          <td style="font-family:monospace;font-size:12px">
+            {{ selected.prev_credential_sha256 or '（无前驱，链首版）' }}</td></tr>
+      {% else %}
+      <tr><th>凭据</th>
+          <td class="muted">该版本在取证登记启用（v{{ activation_version }}）之前发布，
+              没有可核验的凭据；系统不会为其补造证明。其 CSV 仍可下载，
+              但只能作为旧数据参考，不能据此证明发布链条。</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  {% if selected.reconstructed %}
+  <p class="muted" style="margin-top:10px">
+    注：该旧版的发布记录不含时间与批次元数据，批次号与行数取自当时登记的结果行；
+    此处列出的 CSV SHA-256 由登记结果重算，仅供核对，不作为发布凭据。
+  </p>
+  {% endif %}
+
+  <div class="actions">
+    {% if selected.has_credential %}
+    <a href="{{ url_for('evidence', version=selected.version, check=selected.version) }}">
+      <button type="button">核验选定版本 v{{ selected.version }}</button>
+    </a>
+    <a href="{{ url_for('evidence_credential', version=selected.version) }}">
+      <button type="button" class="ghost">下载 v{{ selected.version }} 凭据</button>
+    </a>
+    {% endif %}
+    <a href="{{ url_for('evidence_version_csv', version=selected.version) }}">
+      <button type="button" class="ghost">下载 v{{ selected.version }} CSV</button>
+    </a>
+  </div>
+
+  {% if check %}
+  <div class="banner" style="margin-top:16px;
+       {% if check.ok %}border-color:#abefc6;background:#ecfdf3;color:#067647{% endif %}">
+    {% if check.ok %}
+      <strong>核验通过。</strong>选定版本 v{{ check.version }} 的 CSV、凭据与链上关系均与登记一致。
+      本次结论只依据 v{{ check.version }} 的发布记录，此后新增的发布不会改变该结论。
+    {% else %}
+      <strong>核验不通过。</strong>选定版本 v{{ check.version }}：
+      {% for r in check.reasons %}{{ r }}{% if not loop.last %}；{% endif %}{% endfor %}
+    {% endif %}
+  </div>
+  <table style="margin-top:10px">
+    <thead><tr><th style="width:170px">检查项</th><th style="width:70px">结果</th><th>说明</th></tr></thead>
+    <tbody>
+    {% for c in check.checks %}
+      <tr><td>{{ c.name }}</td>
+          <td>{% if c.ok %}<span class="tag ins">通过</span>{% else %}<span class="tag del">不符</span>{% endif %}</td>
+          <td style="font-family:monospace;font-size:12px">{{ c.detail }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>核验另存的 CSV 与凭据文件</h2>
+  <p class="muted" style="margin-top:0">
+    上传此前从本页下载（或另存）的同一版本的两份文件，系统会核算文件摘要、
+    与登记逐项比对，并检查凭据声明的前版摘要是否与上一版凭据相接。
+    文件不会被写入或修改；核验结论只依据本次上传的字节和登记记录。
+  </p>
+  <form method="post" action="{{ url_for('evidence_verify') }}" enctype="multipart/form-data">
+    <label for="csv_file">当版 CSV 文件</label>
+    <input type="file" id="csv_file" name="csv_file" accept=".csv,text/csv">
+    <label for="credential_file">凭据 JSON 文件（文件名形如 v2-{{ credential_filename }}）</label>
+    <input type="file" id="credential_file" name="credential_file"
+           accept=".json,application/json">
+    <div class="actions"><button type="submit">核验两份文件</button></div>
+  </form>
+</div>
+
+{% endblock %}

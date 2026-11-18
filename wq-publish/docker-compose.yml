@@ -1,0 +1,24 @@
+services:
+  wq-publish:
+    build: .
+    image: wq-publish:latest
+    container_name: wq-publish
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      WQ_DATA_DIR: /data
+      WQ_DOWNSTREAM_DIR: /downstream
+    volumes:
+      # 数据库、版本快照与隔离文件：必须持久化，否则重启后无法核验历史版本
+      - wq-data:/data
+      # 下游采集程序读取目录：CSV 与凭据原子替换
+      - wq-downstream:/downstream
+    # 只允许一个容器实例写同一对数据卷；SQLite 写锁 + 原子改名
+    # 能保证单实例内并发安全，多实例请勿共享同一组卷。
+    deploy:
+      replicas: 1
+
+volumes:
+  wq-data:
+  wq-downstream:

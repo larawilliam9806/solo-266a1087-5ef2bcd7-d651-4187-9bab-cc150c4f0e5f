@@ -14,6 +14,8 @@
   <p class="muted" style="margin-bottom:0">
     下游采集程序读取：<code>downstream/{{ live_filename }}</code>
     （<a href="{{ url_for('published_csv') }}">查看已发布 CSV</a>，文件原子替换，下游只会读到完整旧版或新版）
+    · 发布凭据：<code>downstream/{{ credential_filename }}</code>
+    · <a href="{{ url_for('evidence', version=reg.current_version) }}">查看版本链与凭据</a>
   </p>
   {% else %}
   <p class="muted" style="margin-bottom:0">尚未发布任何版本。首次发布将整批写入并登记为 v1。</p>

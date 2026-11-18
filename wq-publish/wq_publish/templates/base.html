@@ -49,7 +49,14 @@
   </style>
 </head>
 <body>
-  <header><h1>水质实验室 · 批次修订发布台</h1></header>
+  <header>
+    <h1 style="display:inline-block">水质实验室 · 批次修订发布台</h1>
+    <nav style="float:right;font-size:14px;line-height:28px">
+      <a href="{{ url_for('index') }}" style="color:#c9d8ee">发布台</a>
+      <span style="color:#4a6a99;margin:0 8px">|</span>
+      <a href="{{ url_for('evidence') }}" style="color:#c9d8ee">发布凭据 / 取证</a>
+    </nav>
+  </header>
   <main>
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% for category, message in messages %}

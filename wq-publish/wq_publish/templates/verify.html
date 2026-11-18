@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}取证核验结果 · 水质批次修订发布{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>取证核验结果</h2>
+  <div class="banner"
+       {% if result.ok %}style="border-color:#abefc6;background:#ecfdf3;color:#067647"{% endif %}>
+    {% if result.ok %}
+      <strong>核验通过。</strong>
+      上传的 CSV 与凭据均与登记一致，且凭据的前版摘要与本系统上一版凭据相接。
+    {% else %}
+      <strong>核验不通过。</strong>以下原因导致内容或链条不匹配：
+      <ul style="margin:8px 0 0 18px">
+        {% for r in result.reasons %}<li>{{ r }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+
+  <div class="meta" style="margin-top:14px">
+    <div><b>CSV 文件</b><span style="font-size:14px">{{ csv_name or '未上传' }}</span></div>
+    <div><b>凭据文件</b><span style="font-size:14px">{{ cred_name or '未上传' }}</span></div>
+    <div><b>凭据声明版本</b>
+      <span style="font-size:14px">
+        {% if result.credential_payload %}v{{ result.credential_payload.version }}{% else %}—{% endif %}
+      </span></div>
+    <div><b>登记对应版本</b>
+      <span style="font-size:14px">
+        v{{ result.resolved_version }}（凭据）
+        {% if result.csv_version is not none %} / v{{ result.csv_version }}（CSV）{% endif %}
+      </span></div>
+  </div>
+
+  <table style="margin-top:14px">
+    <thead><tr><th style="width:170px">检查项</th><th style="width:70px">结果</th><th>说明</th></tr></thead>
+    <tbody>
+    {% for c in result.checks %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{% if c.ok %}<span class="tag ins">通过</span>{% else %}<span class="tag del">不符</span>{% endif %}</td>
+        <td style="font-family:monospace;font-size:12px">{{ c.detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="actions">
+    <a href="{{ url_for('evidence') }}"><button type="button" class="ghost">返回取证页</button></a>
+  </div>
+</div>
+
+{% if csv_text is not none %}
+<details class="card">
+  <summary style="cursor:pointer;font-weight:600">上传的 CSV 内容（{{ csv_name }}）</summary>
+  <pre class="scroll" style="margin-top:10px;font-size:12px;white-space:pre-wrap">{{ csv_text }}</pre>
+</details>
+{% endif %}
+
+{% if cred_text %}
+<details class="card">
+  <summary style="cursor:pointer;font-weight:600">上传的凭据内容（{{ cred_name }}）</summary>
+  <pre class="scroll" style="margin-top:10px;font-size:12px;white-space:pre-wrap">{{ cred_text }}</pre>
+</details>
+{% endif %}
+
+{% endblock %}
